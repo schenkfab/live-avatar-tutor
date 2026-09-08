@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Teacher Assistant</title>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+</head>
+<body>
+    <div class="glass-bg"></div>
+    <div class="app-container">
+        <header>
+            <div class="header-titles">
+                <div class="logo-icon"><span class="material-icons">school</span></div>
+                <div>
+                    <h1>AI Tutor</h1>
+                    <p>Learn interactively with your personal teacher</p>
+                </div>
+            </div>
+            <div class="header-actions">
+                <button id="connect-btn" class="action-btn connect">Connect</button>
+                <button id="disconnect-btn" class="action-btn disconnect" style="display: none;">Disconnect</button>
+                <div id="status-badge" class="badge disconnected">Disconnected</div>
+            </div>
+        </header>
+
+        <main>
+            <div class="tutor-section">
+                <div class="visualizer-container">
+                    <video id="avatar-video" class="avatar-view" autoplay playsinline muted controls></video>
+                    <img id="avatar-image" class="avatar-view" alt="Live Avatar" style="display: none;" />
+                    <canvas id="avatar-canvas" class="avatar-view" style="display: none;"></canvas>
+                    <div id="avatar-placeholder" class="avatar-placeholder">
+                        <div class="spinner"></div>
+                        <p>Connecting to AI Tutor...</p>
+                    </div>
+                </div>
+                <div class="tutor-info">
+                    <h2>Professor Kira</h2>
+                    <p>Ready to answer your questions!</p>
+                </div>
+            </div>
+
+            <div class="learning-section">
+                <div class="chat-log" id="chat-log">
+                    <div class="message system">
+                        <span class="material-icons">info</span>
+                        <p>Welcome to the classroom. Click anywhere to activate audio, then ask your question below.</p>
+                    </div>
+                </div>
+                
+                <div class="input-area">
+                    <button id="mic-btn" class="icon-btn" disabled title="Hold to speak or click to toggle"><span class="material-icons">mic</span></button>
+                    <input type="text" id="user-input" placeholder="Ask a question..." disabled />
+                    <button id="send-btn" class="icon-btn primary" disabled><span class="material-icons">send</span></button>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
