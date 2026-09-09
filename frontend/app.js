@@ -3,13 +3,39 @@ document.addEventListener('DOMContentLoaded', () => {
     const connectBtn = document.getElementById('connect-btn');
     const disconnectBtn = document.getElementById('disconnect-btn');
     const micBtn = document.getElementById('mic-btn');
+    const cameraBtn = document.getElementById('camera-btn');
+    const screenBtn = document.getElementById('screen-btn');
+    const inputPreview = document.getElementById('input-preview');
+    const tutorName = document.getElementById('tutor-name');
+    const avatarSelect = document.getElementById('avatar-select');
+    const voiceSelect = document.getElementById('voice-select');
+
     const avatarImage = document.getElementById('avatar-image');
     const avatarCanvas = document.getElementById('avatar-canvas');
     const avatarPlaceholder = document.getElementById('avatar-placeholder');
+    const avatarStatus = document.getElementById('avatar-status');
+
+    function showPlaceholder(connecting) {
+        avatarPlaceholder.style.display = 'flex';
+        avatarPlaceholder.querySelector('.spinner').style.display = connecting ? 'block' : 'none';
+        avatarPlaceholder.querySelector('.placeholder-icon').style.display = connecting ? 'none' : 'block';
+        avatarStatus.textContent = connecting ? 'Connecting to your avatar...' : 'Click Connect to start';
+    }
     const avatarVideo = document.getElementById('avatar-video');
     const chatLog = document.getElementById('chat-log');
     const userInput = document.getElementById('user-input');
     const sendBtn = document.getElementById('send-btn');
+
+    // Size the avatar box to the stream so the frame is never cropped
+    function fitAvatarContainer() {
+        if (!avatarVideo.videoWidth || !avatarVideo.videoHeight) return;
+        const container = avatarVideo.parentElement;
+        container.style.aspectRatio = `${avatarVideo.videoWidth} / ${avatarVideo.videoHeight}`;
+        console.log(`Avatar stream ${avatarVideo.videoWidth}x${avatarVideo.videoHeight}`);
+    }
+    avatarVideo.addEventListener('loadedmetadata', fitAvatarContainer);
+    avatarVideo.addEventListener('resize', fitAvatarContainer);
+
 
     let socket = null;
     let audioContext = null;
@@ -20,11 +46,87 @@ document.addEventListener('DOMContentLoaded', () => {
     let sourceBuffer = null;
     let videoQueue = [];
 
-    // Microphone variables
     let micStream = null;
     let micAudioContext = null;
     let micProcessor = null;
     let isRecording = false;
+
+    // Avatars and voices come from the backend (/config), which also holds the defaults
+    let reconnectAfterClose = false;
+
+    function addOption(select, value, label) {
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = label;
+        select.appendChild(option);
+    }
+
+    async function populateTeacherPicker() {
+        let config = { avatars: { 'Professional': ['Kira'] }, voices: { 'Aoede': 'Breezy' }, defaults: { avatar: 'Kira', voice: 'Aoede' } };
+        try {
+            const response = await fetch('/config');
+            if (response.ok) config = await response.json();
+        } catch (e) {
+            console.warn('Could not load /config, using defaults:', e);
+        }
+        avatarSelect.innerHTML = '';
+        voiceSelect.innerHTML = '';
+        for (const [style, names] of Object.entries(config.avatars)) {
+            const group = document.createElement('optgroup');
+            group.label = style;
+            for (const name of names) {
+                const option = document.createElement('option');
+                option.value = name;
+                option.textContent = name;
+                group.appendChild(option);
+            }
+            avatarSelect.appendChild(group);
+        }
+        for (const [name, description] of Object.entries(config.voices)) {
+            addOption(voiceSelect, name, `${name} (${description.toLowerCase()})`);
+        }
+        let avatar = config.defaults.avatar;
+        let voice = config.defaults.voice;
+        try {
+            avatar = localStorage.getItem('avatar') || avatar;
+            voice = localStorage.getItem('voice') || voice;
+        } catch (e) {}
+        avatarSelect.value = avatar;
+        voiceSelect.value = voice;
+        if (!avatarSelect.value) avatarSelect.value = config.defaults.avatar;
+        if (!voiceSelect.value) voiceSelect.value = config.defaults.voice;
+        updateTutorName();
+    }
+
+    function updateTutorName() {
+        tutorName.textContent = `Professor ${avatarSelect.value}`;
+        const subtitle = document.querySelector('.header-titles p');
+        if (subtitle) subtitle.textContent = `Your tutor: Professor ${avatarSelect.value}`;
+    }
+
+    function onTeacherChange() {
+        updateTutorName();
+        try {
+            localStorage.setItem('avatar', avatarSelect.value);
+            localStorage.setItem('voice', voiceSelect.value);
+        } catch (e) {}
+        if (socket && socket.readyState === WebSocket.OPEN) {
+            appendMessage("System", `Switching to Professor ${avatarSelect.value}...`, "system", false);
+            reconnectAfterClose = true;
+            disconnect();
+        }
+    }
+
+    // Camera or screen input, sent to the model as JPEG frames at 1 fps
+    let videoStream = null;
+    let videoSource = null;
+    let frameTimer = null;
+    const frameCanvas = document.createElement('canvas');
+    const FRAME_INTERVAL_MS = 1000;
+    const FRAME_MAX_SIDE = 768;
+
+    // Generated media cards, keyed by tool call id
+    const mediaCards = new Map();
 
     function processVideoQueue() {
         if (!sourceBuffer || sourceBuffer.updating || videoQueue.length === 0 || mediaSource?.readyState !== 'open') {
@@ -37,7 +139,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // 1. Initialize Media Source
     function initMediaSource() {
         if (!window.MediaSource) {
             console.error("MediaSource is not supported in this browser.");
@@ -74,6 +175,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     sourceBuffer = mediaSource.addSourceBuffer(supportedCodec);
                     sourceBuffer.addEventListener('updateend', () => {
                         processVideoQueue();
+                        skipVideoGap();
                         if (avatarVideo.paused && avatarVideo.readyState >= 3) {
                             avatarVideo.play().catch(e => {
                                 avatarVideo.muted = true;
@@ -91,7 +193,6 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // 2. Base64 Decoder
     function base64ToArrayBuffer(base64) {
         const cleanBase64 = base64.replace(/\s/g, '');
         const binaryString = window.atob(cleanBase64);
@@ -102,7 +203,6 @@ document.addEventListener('DOMContentLoaded', () => {
         return bytes.buffer;
     }
 
-    // 3. Audio Handlers
     function initAudioContext() {
         if (!audioContext) {
             audioContext = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: 'interactive' });
@@ -153,14 +253,39 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    // Drop the avatar video that is buffered but not yet played, so an interruption cuts it short
+    function flushAvatarVideo() {
+        videoQueue = [];
+        if (!sourceBuffer || mediaSource?.readyState !== 'open') return;
+        try {
+            if (sourceBuffer.updating) sourceBuffer.abort();
+            const buffered = sourceBuffer.buffered;
+            if (buffered.length) {
+                const from = avatarVideo.currentTime + 0.1;
+                const end = buffered.end(buffered.length - 1);
+                if (end > from) sourceBuffer.remove(from, end);
+            }
+        } catch (e) {
+            console.warn("Could not flush avatar video:", e);
+        }
+    }
+
+    // After a flush the next response starts later on the timeline; jump over the gap
+    function skipVideoGap() {
+        const buffered = avatarVideo.buffered;
+        if (!buffered.length) return;
+        const lastStart = buffered.start(buffered.length - 1);
+        if (avatarVideo.currentTime < lastStart - 0.05) {
+            avatarVideo.currentTime = lastStart;
+        }
+    }
+
     let lastSpeaker = null;
     let lastMessageEl = null;
 
     function appendMessage(author, text, type, isStreaming = true) {
         if (isStreaming && lastSpeaker === type && lastMessageEl) {
-            // Append with space
             lastMessageEl.textContent += " " + text;
-            // Clean up multiple spaces
             lastMessageEl.textContent = lastMessageEl.textContent.replace(/\s+/g, ' ');
             chatLog.scrollTop = chatLog.scrollHeight;
         } else {
@@ -172,6 +297,105 @@ document.addEventListener('DOMContentLoaded', () => {
             lastSpeaker = type;
             lastMessageEl = messageEl;
         }
+    }
+
+    function mediaLabel(kind, state) {
+        const model = kind === 'video' ? 'Gemini Omni' : 'Nano Banana';
+        const noun = kind === 'video' ? 'video' : 'image';
+        if (state === 'pending') return `Generating ${noun} with ${model}`;
+        if (state === 'failed') return `${noun.charAt(0).toUpperCase() + noun.slice(1)} generation failed`;
+        return `${noun.charAt(0).toUpperCase() + noun.slice(1)} generated with ${model}`;
+    }
+
+    function createMediaCard(id, kind, prompt) {
+        const card = document.createElement('div');
+        card.className = `message media-card pending ${kind}`;
+        card.dataset.id = id;
+
+        const header = document.createElement('div');
+        header.className = 'media-header';
+        const icon = document.createElement('span');
+        icon.className = 'material-icons';
+        icon.textContent = kind === 'video' ? 'movie' : 'image';
+        const label = document.createElement('span');
+        label.className = 'media-label';
+        label.textContent = mediaLabel(kind, 'pending');
+        header.append(icon, label);
+
+        const promptEl = document.createElement('p');
+        promptEl.className = 'media-prompt';
+        promptEl.textContent = prompt;
+
+        const body = document.createElement('div');
+        body.className = 'media-body';
+        const spinner = document.createElement('div');
+        spinner.className = 'spinner small';
+        body.appendChild(spinner);
+
+        card.append(header, promptEl, body);
+        chatLog.appendChild(card);
+        chatLog.scrollTop = chatLog.scrollHeight;
+
+        // The next transcript chunk starts a new bubble below the card
+        lastSpeaker = null;
+        lastMessageEl = null;
+
+        mediaCards.set(id, card);
+        return card;
+    }
+
+    function showGeneratedMedia(media) {
+        const kind = media.kind === 'video' ? 'video' : 'image';
+        const card = mediaCards.get(media.id) || createMediaCard(media.id, kind, media.prompt || '');
+        const mimeType = media.mimeType || media.mime_type || (kind === 'video' ? 'video/mp4' : 'image/png');
+        const blob = new Blob([base64ToArrayBuffer(media.data)], { type: mimeType });
+        const url = URL.createObjectURL(blob);
+
+        const body = card.querySelector('.media-body');
+        body.innerHTML = '';
+        let element;
+        if (kind === 'video') {
+            element = document.createElement('video');
+            element.src = url;
+            element.controls = true;
+            element.autoplay = true;
+            element.loop = true;
+            element.muted = true;
+            element.playsInline = true;
+        } else {
+            element = document.createElement('img');
+            element.src = url;
+            element.alt = media.prompt || 'Generated image';
+        }
+        body.appendChild(element);
+
+        const footer = document.createElement('div');
+        footer.className = 'media-footer';
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `${kind}-${media.id}.${mimeType.split('/')[1] || 'bin'}`;
+        const linkIcon = document.createElement('span');
+        linkIcon.className = 'material-icons';
+        linkIcon.textContent = 'download';
+        link.append(linkIcon, document.createTextNode('Download'));
+        footer.appendChild(link);
+        card.appendChild(footer);
+
+        card.classList.remove('pending');
+        card.querySelector('.media-label').textContent = mediaLabel(kind, 'done');
+        chatLog.scrollTop = chatLog.scrollHeight;
+    }
+
+    function showGenerationError(error) {
+        const kind = error.kind === 'video' ? 'video' : 'image';
+        const card = mediaCards.get(error.id) || createMediaCard(error.id, kind, '');
+        const body = card.querySelector('.media-body');
+        body.innerHTML = '';
+        body.textContent = error.message || 'Generation failed.';
+        card.classList.remove('pending');
+        card.classList.add('failed');
+        card.querySelector('.media-label').textContent = mediaLabel(kind, 'failed');
+        chatLog.scrollTop = chatLog.scrollHeight;
     }
 
     function sendMessage() {
@@ -194,7 +418,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // Microphone Recording Logic
     async function toggleMicrophone() {
         if (isRecording) {
             stopMicrophone();
@@ -210,10 +433,13 @@ document.addEventListener('DOMContentLoaded', () => {
             const source = micAudioContext.createMediaStreamSource(micStream);
             
             // Using ScriptProcessorNode to capture raw PCM audio to send directly to Gemini Live
-            micProcessor = micAudioContext.createScriptProcessor(4096, 1, 1);
+            micProcessor = micAudioContext.createScriptProcessor(2048, 1, 1);
             
+            let sentChunks = 0;
             micProcessor.onaudioprocess = (e) => {
                 if (!socket || socket.readyState !== WebSocket.OPEN) return;
+                sentChunks += 1;
+                if (sentChunks === 1 || sentChunks % 100 === 0) console.log(`Sent ${sentChunks} audio chunks`);
                 
                 const float32Array = e.inputBuffer.getChannelData(0);
                 const int16Array = new Int16Array(float32Array.length);
@@ -233,10 +459,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 
                 const message = {
                     realtimeInput: {
-                        mediaChunks: [{
+                        audio: {
                             mimeType: "audio/pcm;rate=16000",
                             data: base64Data
-                        }]
+                        }
                     }
                 };
                 socket.send(JSON.stringify(message));
@@ -247,6 +473,9 @@ document.addEventListener('DOMContentLoaded', () => {
             
             isRecording = true;
             micBtn.classList.add("active");
+            const trackSettings = micStream.getAudioTracks()[0]?.getSettings() || {};
+            console.log(`Microphone on: context ${micAudioContext.sampleRate} Hz, track ${trackSettings.sampleRate || '?'} Hz, state ${micAudioContext.state}`);
+            appendMessage("System", "Microphone on. Speak, then pause so the avatar can answer.", "system", false);
         } catch (err) {
             console.error("Error accessing microphone:", err);
             appendMessage("System", "Could not access microphone.", "system");
@@ -266,14 +495,96 @@ document.addEventListener('DOMContentLoaded', () => {
             micAudioContext.close();
             micAudioContext = null;
         }
+        if (isRecording) appendMessage("System", "Microphone off.", "system", false);
         isRecording = false;
         micBtn.classList.remove("active");
     }
 
-    // 4. Message Handler
+    async function toggleVideoInput(source) {
+        if (videoSource === source) {
+            stopVideoInput();
+            return;
+        }
+        stopVideoInput();
+        try {
+            videoStream = source === 'screen'
+                ? await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false })
+                : await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
+        } catch (err) {
+            console.error(`Could not start ${source}:`, err);
+            appendMessage("System", source === 'screen' ? "Could not share the screen." : "Could not access the camera.", "system", false);
+            return;
+        }
+        videoSource = source;
+        inputPreview.srcObject = videoStream;
+        inputPreview.style.display = 'block';
+        (source === 'screen' ? screenBtn : cameraBtn).classList.add('sharing');
+        videoStream.getVideoTracks()[0].addEventListener('ended', stopVideoInput);
+        frameTimer = setInterval(sendVideoFrame, FRAME_INTERVAL_MS);
+        appendMessage("System", source === 'screen' ? "Screen sharing on. The avatar can see your screen." : "Camera on. The avatar can see your camera.", "system", false);
+    }
+
+    function sendVideoFrame() {
+        if (!socket || socket.readyState !== WebSocket.OPEN || !inputPreview.videoWidth) return;
+        const scale = Math.min(1, FRAME_MAX_SIDE / Math.max(inputPreview.videoWidth, inputPreview.videoHeight));
+        frameCanvas.width = Math.round(inputPreview.videoWidth * scale);
+        frameCanvas.height = Math.round(inputPreview.videoHeight * scale);
+        frameCanvas.getContext('2d').drawImage(inputPreview, 0, 0, frameCanvas.width, frameCanvas.height);
+        const base64Data = frameCanvas.toDataURL('image/jpeg', 0.8).split(',')[1];
+        socket.send(JSON.stringify({
+            realtimeInput: {
+                video: {
+                    mimeType: "image/jpeg",
+                    data: base64Data
+                }
+            }
+        }));
+    }
+
+    function stopVideoInput() {
+        if (frameTimer) {
+            clearInterval(frameTimer);
+            frameTimer = null;
+        }
+        if (videoStream) {
+            videoStream.getTracks().forEach(track => track.stop());
+            videoStream = null;
+        }
+        inputPreview.srcObject = null;
+        inputPreview.style.display = 'none';
+        cameraBtn.classList.remove('sharing');
+        screenBtn.classList.remove('sharing');
+        if (videoSource) appendMessage("System", videoSource === 'screen' ? "Screen sharing off." : "Camera off.", "system", false);
+        videoSource = null;
+    }
+
     function handleServerMessage(message) {
         if (message.error) {
             appendMessage("System", `Error: ${message.error}`, 'system', false);
+            return;
+        }
+
+        // Tool calls from the model: show a pending card while the backend generates the media
+        const toolCall = message.toolCall || message.tool_call;
+        if (toolCall) {
+            const calls = toolCall.functionCalls || toolCall.function_calls || [];
+            for (const call of calls) {
+                const args = call.args || {};
+                if (call.name === 'generate_image') createMediaCard(call.id, 'image', args.prompt || '');
+                else if (call.name === 'generate_video') createMediaCard(call.id, 'video', args.prompt || '');
+                else if (call.name === 'edit_image') createMediaCard(call.id, 'image', `Edit: ${args.instruction || ''}`);
+                else if (call.name === 'edit_video') createMediaCard(call.id, 'video', `Edit: ${args.instruction || ''}`);
+            }
+            return;
+        }
+
+        // Results pushed by the backend once a generation finished
+        if (message.generatedMedia) {
+            showGeneratedMedia(message.generatedMedia);
+            return;
+        }
+        if (message.generationError) {
+            showGenerationError(message.generationError);
             return;
         }
 
@@ -293,6 +604,9 @@ document.addEventListener('DOMContentLoaded', () => {
         if (serverContent.interrupted) {
             console.log("Model interrupted.");
             stopAudio();
+            flushAvatarVideo();
+            lastSpeaker = null;
+            lastMessageEl = null;
             return;
         }
 
@@ -324,14 +638,16 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // 5. Connect and initialize WebSocket
     function connect() {
         if (socket && socket.readyState !== WebSocket.CLOSED) return;
 
         statusBadge.textContent = "Connecting...";
         statusBadge.className = "badge";
+        showPlaceholder(true);
 
-        const wsUrl = `ws://${window.location.hostname}:8080`;
+        const wsProtocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
+        const query = `?avatar=${encodeURIComponent(avatarSelect.value)}&voice=${encodeURIComponent(voiceSelect.value)}`;
+        const wsUrl = wsProtocol + (window.location.host || 'localhost:8080') + '/' + query;
         console.log(`Connecting to ${wsUrl}...`);
         
         socket = new WebSocket(wsUrl);
@@ -347,6 +663,8 @@ document.addEventListener('DOMContentLoaded', () => {
             userInput.disabled = false;
             sendBtn.disabled = false;
             micBtn.disabled = false;
+            cameraBtn.disabled = false;
+            screenBtn.disabled = false;
             
             initMediaSource();
             
@@ -375,6 +693,10 @@ document.addEventListener('DOMContentLoaded', () => {
         socket.onclose = () => {
             console.log("WebSocket disconnected.");
             handleDisconnectState();
+            if (reconnectAfterClose) {
+                reconnectAfterClose = false;
+                connect();
+            }
         };
 
         socket.onerror = (error) => {
@@ -388,6 +710,7 @@ document.addEventListener('DOMContentLoaded', () => {
             socket.close();
         }
         stopMicrophone();
+        stopVideoInput();
         handleDisconnectState();
     }
 
@@ -401,14 +724,16 @@ document.addEventListener('DOMContentLoaded', () => {
         userInput.disabled = true;
         sendBtn.disabled = true;
         micBtn.disabled = true;
+        cameraBtn.disabled = true;
+        screenBtn.disabled = true;
+        stopVideoInput();
         
-        if (avatarPlaceholder) avatarPlaceholder.style.display = 'flex';
+        showPlaceholder(false);
         if (avatarVideo) avatarVideo.style.display = 'none';
         
         stopAudio();
     }
 
-    // 6. Bind Events
     sendBtn.addEventListener('click', sendMessage);
     userInput.addEventListener('keypress', (e) => {
         if (e.key === 'Enter') sendMessage();
@@ -418,4 +743,9 @@ document.addEventListener('DOMContentLoaded', () => {
     disconnectBtn.addEventListener('click', disconnect);
     
     micBtn.addEventListener('click', toggleMicrophone);
+    avatarSelect.addEventListener('change', onTeacherChange);
+    voiceSelect.addEventListener('change', onTeacherChange);
+    populateTeacherPicker();
+    cameraBtn.addEventListener('click', () => toggleVideoInput('camera'));
+    screenBtn.addEventListener('click', () => toggleVideoInput('screen'));
 });

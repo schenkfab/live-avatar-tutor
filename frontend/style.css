@@ -262,7 +262,21 @@ main {
 .avatar-view {
     width: 100%;
     height: 100%;
+    object-fit: contain;
+}
+
+.input-preview {
+    position: absolute;
+    right: 12px;
+    bottom: 12px;
+    width: 36%;
+    max-height: 36%;
     object-fit: cover;
+    border-radius: var(--radius-sm);
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+    background: #000;
+    z-index: 2;
 }
 
 .avatar-placeholder {
@@ -271,6 +285,11 @@ main {
     align-items: center;
     gap: 16px;
     color: var(--text-muted);
+}
+
+.placeholder-icon {
+    font-size: 48px;
+    color: rgba(255, 255, 255, 0.25);
 }
 
 .spinner {
@@ -300,6 +319,43 @@ main {
 .tutor-info p {
     color: var(--text-muted);
     font-size: 0.95rem;
+}
+
+.teacher-picker {
+    display: flex;
+    justify-content: center;
+    gap: 12px;
+    margin-top: 14px;
+}
+
+.teacher-picker label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    text-align: left;
+}
+
+.teacher-picker select {
+    min-width: 140px;
+    padding: 8px 12px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--card-border);
+    background: rgba(0, 0, 0, 0.25);
+    color: var(--text-color);
+    font-size: 0.95rem;
+    cursor: pointer;
+}
+
+.teacher-picker select:focus {
+    outline: none;
+    border-color: var(--primary-color);
+}
+
+.teacher-picker option {
+    background: #1e1b4b;
+    color: var(--text-color);
 }
 
 /* Learning Section */
@@ -386,6 +442,100 @@ main {
     font-size: 20px;
 }
 
+/* Generated media cards */
+.message.media-card {
+    align-self: stretch;
+    max-width: 100%;
+    padding: 14px 16px 12px;
+    background-color: rgba(0, 0, 0, 0.25);
+    border: 1px solid var(--card-border);
+}
+
+.media-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.85rem;
+    font-weight: 500;
+    color: var(--text-muted);
+    margin-bottom: 6px;
+}
+
+.media-header .material-icons {
+    font-size: 18px;
+    color: #a5b4fc;
+}
+
+.media-card.pending .media-header .material-icons {
+    animation: pulse 1.5s infinite;
+}
+
+.media-prompt {
+    font-size: 0.9rem;
+    color: var(--text-muted);
+    font-style: italic;
+    margin-bottom: 10px;
+}
+
+.media-prompt:empty {
+    display: none;
+}
+
+.media-body {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 96px;
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+    background-color: rgba(0, 0, 0, 0.3);
+}
+
+.media-body img,
+.media-body video {
+    display: block;
+    width: 100%;
+    max-height: 380px;
+    object-fit: contain;
+    border-radius: var(--radius-sm);
+}
+
+.media-card.failed .media-body {
+    color: var(--error-color);
+    font-size: 0.9rem;
+    padding: 12px 16px;
+    justify-content: flex-start;
+}
+
+.media-footer {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 8px;
+    font-size: 0.85rem;
+}
+
+.media-footer a {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    color: #a5b4fc;
+    text-decoration: none;
+}
+
+.media-footer a:hover {
+    color: white;
+}
+
+.media-footer .material-icons {
+    font-size: 18px;
+}
+
+.spinner.small {
+    width: 28px;
+    height: 28px;
+    border-width: 2px;
+}
+
 .input-area {
     display: flex;
     gap: 12px;
@@ -437,6 +587,11 @@ input[type="text"]:disabled {
 
 .icon-btn.primary {
     background: linear-gradient(135deg, var(--primary-color), #818cf8);
+}
+
+.icon-btn.sharing {
+    background: linear-gradient(135deg, var(--primary-color), #818cf8);
+    box-shadow: 0 0 15px var(--primary-glow);
 }
 
 .icon-btn.active {

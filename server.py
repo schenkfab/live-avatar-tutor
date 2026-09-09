@@ -2,21 +2,28 @@ import asyncio
 import base64
 import json
 import logging
+import mimetypes
 import os
 import sys
-from typing import Dict, Any
+from http import HTTPStatus
+from pathlib import Path
+from typing import Any, Set
+from urllib.parse import parse_qs, urlsplit
 
 import websockets
+from websockets.datastructures import Headers
 from websockets.exceptions import ConnectionClosed
+from websockets.http11 import Response
 from dotenv import load_dotenv
 
-from live_avatar_agent import ClientMessage, ServerMessage, SetupMessage
-from live_avatar_agent import root_agent, get_agent_setup_config
-
-# Load Environment Variables from the root .env file
+# before importing the agent package, which reads the environment at import time
 load_dotenv()
 
-# Configure Logger
+from live_avatar_agent import ClientMessage, ServerMessage, SetupMessage, SessionState
+from live_avatar_agent import root_agent, get_agent_setup_config, run_function_call
+from live_avatar_agent import AVATARS, VOICES, default_avatar, default_voice
+from live_avatar_agent.auth import get_access_token
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
@@ -24,49 +31,92 @@ logging.basicConfig(
 )
 logger = logging.getLogger("adk_live_backend")
 
+FRONTEND_DIR = Path(__file__).resolve().parent / "frontend"
+
+
 def get_service_url() -> str:
     override_url = os.environ.get("GEMINI_LIVE_API_URL")
     if override_url:
         return override_url
     region = os.environ.get("GCP_REGION", "us-central1")
-    return f"wss://{region}-aiplatform.googleapis.com/ws/google.cloud.aiplatform.v1.LlmBidiService/BidiGenerateContent"
+    host = "aiplatform.googleapis.com" if region == "global" else f"{region}-aiplatform.googleapis.com"
+    return f"wss://{host}/ws/google.cloud.aiplatform.v1.LlmBidiService/BidiGenerateContent"
+
 
 SERVICE_URL = get_service_url()
 API_KEY = os.environ.get("GEMINI_API_KEY", "")
-BEARER_TOKEN = os.environ.get("GEMINI_BEARER_TOKEN", "")
+
+
+def uses_api_key() -> bool:
+    return bool(API_KEY) and "generativelanguage.googleapis.com" in SERVICE_URL
+
 
 def get_vertex_url() -> str:
-    base_url = get_service_url()
-    if API_KEY and "generativelanguage.googleapis.com" in base_url:
-        return f"{base_url}?key={API_KEY}"
-    return base_url
+    if uses_api_key():
+        return f"{SERVICE_URL}?key={API_KEY}"
+    return SERVICE_URL
+
 
 def get_vertex_headers() -> dict:
-    headers = {}
-    if BEARER_TOKEN and not API_KEY:
-        headers["Authorization"] = f"Bearer {BEARER_TOKEN}"
-    return headers
+    if uses_api_key():
+        return {}
+    return {"Authorization": f"Bearer {get_access_token()}"}
+
+
+def log_server_message(parsed: ServerMessage):
+    if parsed.error:
+        logger.error(f"Vertex AI Error: Code={parsed.error.code}, Message='{parsed.error.message}'")
+    if parsed.setup_complete:
+        logger.info("Vertex AI Session Setup Completed successfully.")
+    content = parsed.server_content
+    if not content:
+        return
+    if content.interrupted:
+        logger.warning("Model interrupted by user input.")
+    if content.input_transcription and content.input_transcription.text:
+        logger.info(f"User Spoke: {content.input_transcription.text}")
+    if content.output_transcription and content.output_transcription.text:
+        logger.info(f"Model Spoke: {content.output_transcription.text}")
+    if content.model_turn and content.model_turn.parts:
+        for part in content.model_turn.parts:
+            if part.text:
+                logger.info(f"Model Response Text: {part.text}")
+
 
 async def proxy_bidirectional(client_ws: Any, vertex_ws: Any):
     """Bidirectional proxy between client browser and Vertex AI Live API."""
 
+    state = SessionState()
+    background_tasks: Set[asyncio.Task] = set()
+
+    def spawn(coro):
+        task = asyncio.create_task(coro)
+        background_tasks.add(task)
+        task.add_done_callback(background_tasks.discard)
+
     async def client_to_vertex():
+        audio_chunks = 0
+        video_frames = 0
         try:
             async for message in client_ws:
-                msg_preview = str(message)[:200] + "..." if len(str(message)) > 200 else message
-                logger.debug(f"Received from client: {msg_preview}")
                 try:
-                    # Validate and parse incoming client message
                     parsed = ClientMessage.model_validate_json(message)
-                    
-                    if parsed.realtime_input and parsed.realtime_input.text:
-                        logger.info(f"User Query: {parsed.realtime_input.text}")
-                    
-                    # Forward to Vertex AI
+                    realtime = parsed.realtime_input
+                    if realtime and realtime.text:
+                        logger.info(f"User Query: {realtime.text}")
+                    if realtime and (realtime.audio or realtime.media_chunks):
+                        audio_chunks += 1
+                        if audio_chunks == 1 or audio_chunks % 100 == 0:
+                            blob = realtime.audio or realtime.media_chunks[0]
+                            logger.info(f"Forwarding audio chunk {audio_chunks} ({blob.mime_type}, {len(blob.data)} base64 chars)")
+                    if realtime and realtime.video:
+                        state.last_frame = (realtime.video.mime_type, base64.b64decode(realtime.video.data))
+                        video_frames += 1
+                        if video_frames == 1 or video_frames % 30 == 0:
+                            logger.info(f"Forwarding video frame {video_frames} ({realtime.video.mime_type}, {len(realtime.video.data)} base64 chars)")
                     await vertex_ws.send(parsed.model_dump_json(by_alias=True, exclude_none=True))
                 except Exception as e:
                     logger.error(f"Error parsing or forwarding client message: {e}")
-                    # Fallback forwarding just in case
                     await vertex_ws.send(message)
         except ConnectionClosed:
             logger.info("Client disconnected.")
@@ -76,77 +126,73 @@ async def proxy_bidirectional(client_ws: Any, vertex_ws: Any):
     async def vertex_to_client():
         try:
             async for message in vertex_ws:
-                # 1. FAST PATH: Forward immediately to minimize latency
+                # forward first, parse after, so logging never delays the stream
                 if isinstance(message, bytes):
                     try:
-                        message_str = message.decode('utf-8')
-                        await client_ws.send(message_str)
+                        message = message.decode('utf-8')
                     except UnicodeDecodeError:
                         await client_ws.send(message)
-                else:
-                    await client_ws.send(message)
+                        continue
+                await client_ws.send(message)
 
-                # 2. LOGGING: Avoid parsing/printing massive video payloads to prevent CPU/IO blocking
+                # video chunks are large, skip parsing them
+                if len(message) >= 10000:
+                    continue
                 try:
-                    if len(message) < 10000:
-                        parsed = ServerMessage.model_validate_json(message)
-                        
-                        if parsed.error:
-                            logger.error(f"Vertex AI Error: Code={parsed.error.code}, Message='{parsed.error.message}'")
-                        
-                        if parsed.setup_complete:
-                            logger.info("Vertex AI Session Setup Completed successfully.")
+                    parsed = ServerMessage.model_validate_json(message)
+                except Exception:
+                    continue
 
-                        if parsed.server_content:
-                            if parsed.server_content.interrupted:
-                                logger.warning("Model interrupted by user input.")
-                            if parsed.server_content.input_transcription and parsed.server_content.input_transcription.text:
-                                logger.info(f"User Spoke: {parsed.server_content.input_transcription.text}")
-                            if parsed.server_content.output_transcription and parsed.server_content.output_transcription.text:
-                                logger.info(f"Model Spoke: {parsed.server_content.output_transcription.text}")
-                            if parsed.server_content.model_turn and parsed.server_content.model_turn.parts:
-                                for part in parsed.server_content.model_turn.parts:
-                                    if part.text:
-                                        logger.info(f"Model Response Text: {part.text}")
-                except Exception as e:
-                    pass
+                log_server_message(parsed)
+                if parsed.tool_call:
+                    for call in parsed.tool_call.function_calls:
+                        spawn(run_function_call(call, state, client_ws, vertex_ws))
+                if parsed.tool_call_cancellation:
+                    logger.warning(f"Model cancelled tool calls: {parsed.tool_call_cancellation.ids}")
         except ConnectionClosed as e:
             logger.error(f"Vertex AI connection closed. Code: {e.code}, Reason: '{e.reason}'")
         except Exception as e:
             logger.error(f"Error in vertex_to_client: {e}")
 
-    # Run both tasks concurrently and clean up pending tasks instantly when one completes or fails
     done, pending = await asyncio.wait(
-        [
-            asyncio.create_task(client_to_vertex()),
-            asyncio.create_task(vertex_to_client())
-        ],
+        [asyncio.create_task(client_to_vertex()), asyncio.create_task(vertex_to_client())],
         return_when=asyncio.FIRST_COMPLETED
     )
     for task in pending:
         task.cancel()
+    for task in background_tasks:
+        task.cancel()
+
+
+def connection_params(websocket: Any) -> dict:
+    """Query parameters of the browser's WebSocket URL, e.g. /?avatar=Kira&voice=Aoede"""
+    request = getattr(websocket, "request", None)
+    path = getattr(request, "path", "") or ""
+    return {key: values[0] for key, values in parse_qs(urlsplit(path).query).items() if values}
+
 
 async def handler(websocket: Any):
     logger.info(f"New client connection established from {websocket.remote_address}")
-    
-    vertex_url = get_vertex_url()
-    headers = get_vertex_headers()
-    
+    params = connection_params(websocket)
+
     logger.info(f"Connecting to Vertex AI Live API at {SERVICE_URL}...")
     try:
+        vertex_url = get_vertex_url()
+        headers = get_vertex_headers()
+
         async with websockets.connect(vertex_url, additional_headers=headers if headers else None) as vertex_ws:
             logger.info("Connected to Vertex AI Live API successfully.")
-            
-            # 1. Send Setup Message using ADK Agent configuration
-            setup_payload = get_agent_setup_config(root_agent)
-            logger.info(f"Sending Setup Message with model: {root_agent.model}...")
-            
-            # Validate with Pydantic SetupMessage
+
+            setup_payload = get_agent_setup_config(root_agent, params.get("avatar"), params.get("voice"))
+            setup = setup_payload["setup"]
+            avatar = setup.get("avatar_config", {}).get("avatar_name", "no avatar")
+            voice = setup["generation_config"]["speech_config"]["voice_config"]["prebuilt_voice_config"]["voice_name"]
+            logger.info(f"Sending Setup Message with model: {root_agent.model}, avatar {avatar}, voice {voice}...")
+
             setup_msg = SetupMessage.model_validate(setup_payload)
             await vertex_ws.send(setup_msg.model_dump_json(by_alias=True, exclude_none=True))
             logger.info("Session setup message sent.")
-            
-            # 2. Start bidirectional proxying
+
             await proxy_bidirectional(websocket, vertex_ws)
     except Exception as e:
         logger.error(f"Failed to connect or maintain session with Vertex AI: {e}")
@@ -155,12 +201,43 @@ async def handler(websocket: Any):
         except:
             pass
 
+
+def json_response(connection: Any, payload: dict):
+    body = json.dumps(payload).encode("utf-8")
+    headers = Headers([("Content-Type", "application/json"), ("Content-Length", str(len(body))), ("Cache-Control", "no-cache")])
+    return Response(HTTPStatus.OK, "OK", headers, body)
+
+
+def serve_frontend(connection: Any, request: Any):
+    """Serves the frontend and /config on the same port; WebSocket upgrades pass through to the handler."""
+    if request.headers.get("Upgrade", "").lower() == "websocket":
+        return None
+    path = request.path.split("?", 1)[0]
+    if path == "/config":
+        return json_response(connection, {
+            "avatars": AVATARS,
+            "voices": VOICES,
+            "defaults": {"avatar": default_avatar(), "voice": default_voice()},
+        })
+    if path == "/":
+        path = "/index.html"
+    file_path = (FRONTEND_DIR / path.lstrip("/")).resolve()
+    if not file_path.is_file() or FRONTEND_DIR not in file_path.parents:
+        return connection.respond(HTTPStatus.NOT_FOUND, "Not found\n")
+    content_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
+    body = file_path.read_bytes()
+    headers = Headers([("Content-Type", content_type), ("Content-Length", str(len(body))), ("Cache-Control", "no-cache")])
+    return Response(HTTPStatus.OK, "OK", headers, body)
+
+
 async def main():
     host = "0.0.0.0"
     port = int(os.environ.get("PORT", 8080))
-    logger.info(f"Starting ADK Live API Backend WebSocket Server on {host}:{port}...")
-    async with websockets.serve(handler, host, port):
-        await asyncio.Future()  # run forever
+    logger.info(f"Starting Live Avatar backend on {host}:{port}...")
+    logger.info(f"Open http://localhost:{port} in your browser.")
+    async with websockets.serve(handler, host, port, process_request=serve_frontend, max_size=8 * 1024 * 1024):
+        await asyncio.Future()
+
 
 if __name__ == "__main__":
     try:

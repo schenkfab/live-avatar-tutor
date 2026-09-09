@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Teacher Assistant</title>
+    <title>Live Avatar Studio</title>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="style.css">
     <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
@@ -15,8 +15,8 @@
             <div class="header-titles">
                 <div class="logo-icon"><span class="material-icons">school</span></div>
                 <div>
-                    <h1>AI Tutor</h1>
-                    <p>Learn interactively with your personal teacher</p>
+                    <h1>Live Avatar Studio</h1>
+                    <p>Your tutor: Professor Kira</p>
                 </div>
             </div>
             <div class="header-actions">
@@ -25,41 +25,50 @@
                 <div id="status-badge" class="badge disconnected">Disconnected</div>
             </div>
         </header>
-
         <main>
             <div class="tutor-section">
                 <div class="visualizer-container">
                     <video id="avatar-video" class="avatar-view" autoplay playsinline muted controls></video>
                     <img id="avatar-image" class="avatar-view" alt="Live Avatar" style="display: none;" />
                     <canvas id="avatar-canvas" class="avatar-view" style="display: none;"></canvas>
+                    <video id="input-preview" class="input-preview" autoplay playsinline muted style="display: none;"></video>
                     <div id="avatar-placeholder" class="avatar-placeholder">
-                        <div class="spinner"></div>
-                        <p>Connecting to AI Tutor...</p>
+                        <span class="material-icons placeholder-icon">videocam_off</span>
+                        <div class="spinner" style="display: none;"></div>
+                        <p id="avatar-status">Click Connect to start</p>
                     </div>
                 </div>
                 <div class="tutor-info">
-                    <h2>Professor Kira</h2>
+                    <h2 id="tutor-name">Professor Kira</h2>
                     <p>Ready to answer your questions!</p>
+                    <div class="teacher-picker">
+                        <label>Teacher
+                            <select id="avatar-select"></select>
+                        </label>
+                        <label>Voice
+                            <select id="voice-select"></select>
+                        </label>
+                    </div>
                 </div>
             </div>
-
             <div class="learning-section">
                 <div class="chat-log" id="chat-log">
                     <div class="message system">
                         <span class="material-icons">info</span>
-                        <p>Welcome to the classroom. Click anywhere to activate audio, then ask your question below.</p>
+                        <p>Welcome to the classroom. Click anywhere to activate audio, then ask your question below. Share your camera or screen to ask about what you see, and ask for images or short videos as many times as you like.</p>
                     </div>
                 </div>
                 
                 <div class="input-area">
-                    <button id="mic-btn" class="icon-btn" disabled title="Hold to speak or click to toggle"><span class="material-icons">mic</span></button>
-                    <input type="text" id="user-input" placeholder="Ask a question..." disabled />
+                    <button id="mic-btn" class="icon-btn" disabled title="Microphone on/off"><span class="material-icons">mic</span></button>
+                    <button id="camera-btn" class="icon-btn" disabled title="Share your camera with the avatar"><span class="material-icons">videocam</span></button>
+                    <button id="screen-btn" class="icon-btn" disabled title="Share your screen with the avatar"><span class="material-icons">screen_share</span></button>
+                    <input type="text" id="user-input" placeholder="Ask a question, or ask for an image or a video..." disabled />
                     <button id="send-btn" class="icon-btn primary" disabled><span class="material-icons">send</span></button>
                 </div>
             </div>
         </main>
     </div>
-
     <script src="app.js"></script>
 </body>
 </html>
