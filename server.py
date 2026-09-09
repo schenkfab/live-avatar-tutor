@@ -4,12 +4,14 @@ import json
 import logging
 import mimetypes
 import os
+import ssl
 import sys
 from http import HTTPStatus
 from pathlib import Path
 from typing import Any, Set
 from urllib.parse import parse_qs, urlsplit
 
+import certifi
 import websockets
 from websockets.datastructures import Headers
 from websockets.exceptions import ConnectionClosed
@@ -61,6 +63,13 @@ def get_vertex_headers() -> dict:
     if uses_api_key():
         return {}
     return {"Authorization": f"Bearer {get_access_token()}"}
+
+
+def get_ssl_context() -> ssl.SSLContext:
+    try:
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        return ssl.create_default_context()
 
 
 def log_server_message(parsed: ServerMessage):
@@ -180,7 +189,12 @@ async def handler(websocket: Any):
         vertex_url = get_vertex_url()
         headers = get_vertex_headers()
 
-        async with websockets.connect(vertex_url, additional_headers=headers if headers else None) as vertex_ws:
+        ssl_context = get_ssl_context() if vertex_url.startswith("wss://") else None
+        async with websockets.connect(
+            vertex_url,
+            additional_headers=headers if headers else None,
+            ssl=ssl_context,
+        ) as vertex_ws:
             logger.info("Connected to Vertex AI Live API successfully.")
 
             setup_payload = get_agent_setup_config(root_agent, params.get("avatar"), params.get("voice"))
