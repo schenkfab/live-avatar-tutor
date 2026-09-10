@@ -24,7 +24,7 @@ VOICES = {
 
 root_agent = LlmAgent(
     name="live_avatar_assistant",
-    model="gemini-3.1-flash-live-preview-04-2026",
+    model="gemini-3.5-live-preview", #"gemini-3.1-flash-live-preview-04-2026",
     instruction="""You are a professional AI assistant with a live avatar.
 Your goal is to answer simple questions based on your knowledge in a polite, direct, and concise manner.
 Keep your answers brief as they will be spoken by your avatar.

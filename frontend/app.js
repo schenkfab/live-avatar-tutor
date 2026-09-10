@@ -35,12 +35,34 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     avatarVideo.addEventListener('loadedmetadata', fitAvatarContainer);
     avatarVideo.addEventListener('resize', fitAvatarContainer);
+    avatarVideo.addEventListener('canplay', () => {
+        if (avatarVideo.paused && sourceBuffer && !sourceBuffer.updating && avatarVideo.readyState >= 3) {
+            avatarVideo.play().catch(() => {});
+        }
+    });
+    avatarVideo.addEventListener('seeked', () => {
+        if (avatarVideo.paused && avatarVideo.readyState >= 3) {
+            avatarVideo.play().catch(() => {});
+        }
+    });
 
 
     let socket = null;
+
+    // High-Fidelity Audio Streaming & Lip-Sync Alignment
+    const AUDIO_SAMPLE_RATE = 24000;
+    // Delay audio playback by ~200ms when starting a turn:
+    // 1) Buffers 3-4 chunks to eliminate buffer underruns & crackle from network jitter
+    // 2) Matches the ~200ms decode/render latency of HTML5 Video/MediaSource to align lip-sync
+    const AUDIO_PREBUFFER_SEC = 0.20;
     let audioContext = null;
+    let masterGain = null;
     let audioStack = [];
     let nextAudioTime = 0;
+    let audioPrebuffer = [];
+    let isPlayingAudio = false;
+    let prebufferTimeout = null;
+    let leftoverAudioBytes = null;
     
     let mediaSource = null;
     let sourceBuffer = null;
@@ -206,17 +228,90 @@ document.addEventListener('DOMContentLoaded', () => {
     function initAudioContext() {
         if (!audioContext) {
             audioContext = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: 'interactive' });
+            masterGain = audioContext.createGain();
+            masterGain.gain.setValueAtTime(1, audioContext.currentTime);
+            masterGain.connect(audioContext.destination);
             nextAudioTime = audioContext.currentTime;
+        }
+        if (audioContext.state === 'suspended') {
+            audioContext.resume().catch(() => {});
         }
     }
 
     function pcm16ToFloat32(uint8Array) {
-        const int16Array = new Int16Array(uint8Array.buffer);
-        const float32Array = new Float32Array(int16Array.length);
-        for (let i = 0; i < int16Array.length; i++) {
+        let combined = uint8Array;
+        if (leftoverAudioBytes && leftoverAudioBytes.length > 0) {
+            const merged = new Uint8Array(leftoverAudioBytes.length + uint8Array.length);
+            merged.set(leftoverAudioBytes, 0);
+            merged.set(uint8Array, leftoverAudioBytes.length);
+            combined = merged;
+            leftoverAudioBytes = null;
+        }
+
+        const sampleCount = Math.floor(combined.length / 2);
+        if (combined.length % 2 !== 0) {
+            leftoverAudioBytes = combined.slice(sampleCount * 2);
+        }
+
+        const int16Array = new Int16Array(combined.buffer, combined.byteOffset, sampleCount);
+        const float32Array = new Float32Array(sampleCount);
+        for (let i = 0; i < sampleCount; i++) {
             float32Array[i] = int16Array[i] / 32768.0;
         }
         return float32Array;
+    }
+
+    function scheduleAudioChunk(floatData, isFirstChunkOfTurn = false) {
+        if (!audioContext || !masterGain || floatData.length === 0) return;
+
+        const audioBuffer = audioContext.createBuffer(1, floatData.length, AUDIO_SAMPLE_RATE);
+        audioBuffer.getChannelData(0).set(floatData);
+
+        const source = audioContext.createBufferSource();
+        source.buffer = audioBuffer;
+
+        // Apply a 4ms micro-fade on the first chunk of a turn to prevent DC offset clicks
+        const chunkGain = audioContext.createGain();
+        if (isFirstChunkOfTurn) {
+            chunkGain.gain.setValueAtTime(0, nextAudioTime);
+            chunkGain.gain.linearRampToValueAtTime(1, nextAudioTime + 0.004);
+        } else {
+            chunkGain.gain.setValueAtTime(1, nextAudioTime);
+        }
+
+        source.connect(chunkGain);
+        chunkGain.connect(masterGain);
+
+        source.start(nextAudioTime);
+        nextAudioTime += audioBuffer.duration;
+
+        audioStack.push(source);
+        source.onended = () => {
+            const idx = audioStack.indexOf(source);
+            if (idx !== -1) audioStack.splice(idx, 1);
+            if (audioStack.length === 0 && audioPrebuffer.length === 0) {
+                isPlayingAudio = false;
+            }
+        };
+    }
+
+    function flushPrebuffer() {
+        if (prebufferTimeout) {
+            clearTimeout(prebufferTimeout);
+            prebufferTimeout = null;
+        }
+        if (audioPrebuffer.length === 0) return;
+
+        isPlayingAudio = true;
+        // Schedule starting right now with a 10ms head room for the audio thread quantum
+        nextAudioTime = audioContext.currentTime + 0.01;
+
+        let first = true;
+        while (audioPrebuffer.length > 0) {
+            const chunk = audioPrebuffer.shift();
+            scheduleAudioChunk(chunk, first);
+            first = false;
+        }
     }
 
     function queueAudioFrame(mimeType, base64Data) {
@@ -224,33 +319,64 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!audioContext) return;
 
         const arrayBuffer = base64ToArrayBuffer(base64Data);
-        const sampleRate = 24000;
         const floatData = pcm16ToFloat32(new Uint8Array(arrayBuffer));
+        if (floatData.length === 0) return;
 
-        const audioBuffer = audioContext.createBuffer(1, floatData.length, sampleRate);
-        audioBuffer.getChannelData(0).set(floatData);
-
-        const source = audioContext.createBufferSource();
-        source.buffer = audioBuffer;
-        source.connect(audioContext.destination);
-
-        if (nextAudioTime < audioContext.currentTime) {
-            nextAudioTime = audioContext.currentTime;
+        // If audio is actively playing
+        if (isPlayingAudio) {
+            // Jitter underrun recovery: if schedule fell behind currentTime, reset smoothly with margin
+            if (nextAudioTime < audioContext.currentTime) {
+                nextAudioTime = audioContext.currentTime + 0.04;
+                scheduleAudioChunk(floatData, true);
+            } else {
+                scheduleAudioChunk(floatData, false);
+            }
+            return;
         }
-        source.start(nextAudioTime);
-        nextAudioTime += audioBuffer.duration;
 
-        audioStack.push(source);
+        // Starting a new turn: accumulate in pre-buffer first
+        audioPrebuffer.push(floatData);
+        const bufferedSamples = audioPrebuffer.reduce((sum, c) => sum + c.length, 0);
+        const bufferedSec = bufferedSamples / AUDIO_SAMPLE_RATE;
+
+        if (bufferedSec >= AUDIO_PREBUFFER_SEC) {
+            flushPrebuffer();
+        } else if (!prebufferTimeout) {
+            prebufferTimeout = setTimeout(() => {
+                flushPrebuffer();
+            }, 180);
+        }
     }
 
     function stopAudio() {
-        audioStack.forEach(source => {
-            try { source.stop(); } catch (e) {}
-        });
-        audioStack = [];
-        if (audioContext) {
-            nextAudioTime = audioContext.currentTime;
+        if (prebufferTimeout) {
+            clearTimeout(prebufferTimeout);
+            prebufferTimeout = null;
         }
+        audioPrebuffer = [];
+        isPlayingAudio = false;
+        leftoverAudioBytes = null;
+
+        if (masterGain && audioContext) {
+            try {
+                // Smooth 10ms fade out to avoid abrupt cutoff clicks on interruption
+                masterGain.gain.setValueAtTime(masterGain.gain.value, audioContext.currentTime);
+                masterGain.gain.linearRampToValueAtTime(0, audioContext.currentTime + 0.01);
+            } catch (e) {}
+        }
+
+        setTimeout(() => {
+            audioStack.forEach(source => {
+                try { source.stop(); } catch (e) {}
+            });
+            audioStack = [];
+            if (masterGain && audioContext) {
+                masterGain.gain.setValueAtTime(1, audioContext.currentTime);
+            }
+            if (audioContext) {
+                nextAudioTime = audioContext.currentTime;
+            }
+        }, 12);
     }
 
     // Drop the avatar video that is buffered but not yet played, so an interruption cuts it short
@@ -675,7 +801,7 @@ document.addEventListener('DOMContentLoaded', () => {
             
             document.body.addEventListener('click', () => {
                 initAudioContext();
-                if (avatarVideo) avatarVideo.muted = false;
+                if (avatarVideo) avatarVideo.muted = true;
             }, { once: true });
         };
 
