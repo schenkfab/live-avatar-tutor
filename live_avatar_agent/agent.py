@@ -24,7 +24,7 @@ VOICES = {
 
 root_agent = LlmAgent(
     name="live_avatar_assistant",
-    model="gemini-3.5-live-preview", #"gemini-3.1-flash-live-preview-04-2026",
+    model="gemini-3.8-live",  # or "gemini-3.1-flash-live-preview-04-2026"
     instruction="""You are a professional AI assistant with a live avatar.
 Your goal is to answer simple questions based on your knowledge in a polite, direct, and concise manner.
 Keep your answers brief as they will be spoken by your avatar.
@@ -82,17 +82,28 @@ def get_agent_setup_config(agent: LlmAgent, avatar_name: Optional[str] = None, v
         model_name = f"projects/{project_id}/locations/{region}/publishers/google/models/{model_name}"
     elif "publishers/" in model_name and "projects/" not in model_name:
         model_name = f"projects/{project_id}/locations/{region}/{model_name}"
+    
+    print(f"Model name: {model_name}")
 
     setup = {
         "system_instruction": {"parts": [{"text": instruction_text}]},
         "model": model_name,
         "generation_config": {
-            "response_modalities": ["VIDEO"] if use_avatar else ["TEXT", "AUDIO"],
+            "response_modalities": ["VIDEO"] if use_avatar else ["AUDIO"],
             "speech_config": {
                 "voice_config": {
                     "prebuilt_voice_config": {"voice_name": pick(voice_name, VOICES, default_voice())}
                 }
             },
+        },
+        "realtime_input_config": {
+            "automatic_activity_detection": {
+                "disabled": False,
+                "start_of_speech_sensitivity": "START_SENSITIVITY_HIGH",
+                "end_of_speech_sensitivity": "END_SENSITIVITY_HIGH",
+                "prefix_padding_ms": 20,
+                "silence_duration_ms": 100,
+            }
         },
         "tools": [{"function_declarations": function_declarations(agent.tools)}],
         "input_audio_transcription": {},
@@ -100,4 +111,8 @@ def get_agent_setup_config(agent: LlmAgent, avatar_name: Optional[str] = None, v
     }
     if use_avatar:
         setup["avatar_config"] = {"avatar_name": pick(avatar_name, AVATAR_NAMES, default_avatar())}
+    else:
+        # Proactive audio routes to an audio-only model variant (e.g. *_proactive)
+        # that rejects response_modalities=["VIDEO"]. Only enable it in audio-only mode.
+        setup["proactivity"] = {"proactive_audio": True}
     return {"setup": setup}

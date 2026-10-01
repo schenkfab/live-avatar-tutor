@@ -72,13 +72,26 @@ def get_ssl_context() -> ssl.SSLContext:
         return ssl.create_default_context()
 
 
-def log_server_message(parsed: ServerMessage):
+def log_server_message(parsed: ServerMessage, raw_message: str = ""):
     if parsed.error:
-        logger.error(f"Vertex AI Error: Code={parsed.error.code}, Message='{parsed.error.message}'")
+        logger.error(
+            f"Vertex AI Error: Code={parsed.error.code}, Status={parsed.error.status}, "
+            f"Message='{parsed.error.message}', Raw={raw_message}"
+        )
     if parsed.setup_complete:
         logger.info("Vertex AI Session Setup Completed successfully.")
+    if parsed.usage_metadata:
+        u = parsed.usage_metadata
+        logger.info(
+            f"Usage Metadata: Input={u.prompt_token_count or 0}, "
+            f"Output={u.response_token_count or 0}, "
+            f"Thoughts={u.thoughts_token_count or 0}, "
+            f"Total={u.total_token_count or 0} tokens"
+        )
     content = parsed.server_content
     if not content:
+        if not (parsed.error or parsed.setup_complete or parsed.usage_metadata or parsed.tool_call or parsed.tool_call_cancellation):
+            logger.info(f"Vertex AI raw message: {raw_message}")
         return
     if content.interrupted:
         logger.warning("Model interrupted by user input.")
@@ -113,10 +126,10 @@ async def proxy_bidirectional(client_ws: Any, vertex_ws: Any):
                     realtime = parsed.realtime_input
                     if realtime and realtime.text:
                         logger.info(f"User Query: {realtime.text}")
-                    if realtime and (realtime.audio or realtime.media_chunks):
+                    if realtime and realtime.audio:
                         audio_chunks += 1
                         if audio_chunks == 1 or audio_chunks % 100 == 0:
-                            blob = realtime.audio or realtime.media_chunks[0]
+                            blob = realtime.audio
                             logger.info(f"Forwarding audio chunk {audio_chunks} ({blob.mime_type}, {len(blob.data)} base64 chars)")
                     if realtime and realtime.video:
                         state.last_frame = (realtime.video.mime_type, base64.b64decode(realtime.video.data))
@@ -140,28 +153,33 @@ async def proxy_bidirectional(client_ws: Any, vertex_ws: Any):
                     try:
                         message = message.decode('utf-8')
                     except UnicodeDecodeError:
+                        logger.info(f"Received binary non-UTF8 frame from Vertex AI ({len(message)} bytes)")
                         await client_ws.send(message)
                         continue
                 await client_ws.send(message)
 
-                # video chunks are large, skip parsing them
-                if len(message) >= 10000:
+                # video chunks are large, skip parsing them unless they contain usageMetadata or toolCall
+                if len(message) >= 10000 and "usageMetadata" not in message and "toolCall" not in message:
                     continue
                 try:
                     parsed = ServerMessage.model_validate_json(message)
-                except Exception:
+                except Exception as parse_err:
+                    logger.warning(f"Unparsed message from Vertex AI ({parse_err}): {message}")
                     continue
 
-                log_server_message(parsed)
+                log_server_message(parsed, message)
                 if parsed.tool_call:
                     for call in parsed.tool_call.function_calls:
                         spawn(run_function_call(call, state, client_ws, vertex_ws))
                 if parsed.tool_call_cancellation:
                     logger.warning(f"Model cancelled tool calls: {parsed.tool_call_cancellation.ids}")
         except ConnectionClosed as e:
-            logger.error(f"Vertex AI connection closed. Code: {e.code}, Reason: '{e.reason}'")
+            logger.error(
+                f"Vertex AI connection closed. Code: {e.code}, Reason ({len(e.reason.encode('utf-8'))} bytes): {e.reason!r}, "
+                f"rcvd={e.rcvd!r}, sent={e.sent!r}"
+            )
         except Exception as e:
-            logger.error(f"Error in vertex_to_client: {e}")
+            logger.error(f"Error in vertex_to_client: {e}", exc_info=True)
 
     done, pending = await asyncio.wait(
         [asyncio.create_task(client_to_vertex()), asyncio.create_task(vertex_to_client())],
@@ -184,7 +202,7 @@ async def handler(websocket: Any):
     logger.info(f"New client connection established from {websocket.remote_address}")
     params = connection_params(websocket)
 
-    logger.info(f"Connecting to Vertex AI Live API at {SERVICE_URL}...")
+    logger.info(f"Connecting to Live API at {SERVICE_URL}...")
     try:
         vertex_url = get_vertex_url()
         headers = get_vertex_headers()

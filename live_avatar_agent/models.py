@@ -27,7 +27,24 @@ class AvatarConfig(BaseModel):
 class GenerationConfig(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
     response_modalities: List[str] = Field(default=["VIDEO"], alias="responseModalities")
+    enable_affective_dialog: Optional[bool] = Field(default=None, alias="enableAffectiveDialog")
     speech_config: Optional[SpeechConfig] = Field(default_factory=SpeechConfig, alias="speechConfig")
+
+class AutomaticActivityDetection(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    disabled: Optional[bool] = False
+    start_of_speech_sensitivity: Optional[str] = "START_SENSITIVITY_HIGH"
+    end_of_speech_sensitivity: Optional[str] = "END_SENSITIVITY_HIGH"
+    prefix_padding_ms: Optional[int] = 20
+    silence_duration_ms: Optional[int] = 100
+
+class RealtimeInputConfig(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    automatic_activity_detection: Optional[AutomaticActivityDetection] = Field(default_factory=AutomaticActivityDetection)
+
+class ProactivityConfig(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    proactive_audio: Optional[bool] = True
 
 class FunctionDeclaration(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
@@ -45,6 +62,8 @@ class SetupDetails(BaseModel):
     model: str = Field(default="gemini-3.1-flash-live-preview-04-2026")
     generation_config: GenerationConfig = Field(default_factory=GenerationConfig, alias="generationConfig")
     avatar_config: Optional[AvatarConfig] = Field(default=None, alias="avatarConfig")
+    realtime_input_config: Optional[RealtimeInputConfig] = Field(default=None, alias="realtimeInputConfig")
+    proactivity: Optional[ProactivityConfig] = Field(default=None)
     tools: Optional[List[Tool]] = None
     input_audio_transcription: Dict[str, Any] = Field(default_factory=dict, alias="inputAudioTranscription")
     output_audio_transcription: Dict[str, Any] = Field(default_factory=dict, alias="outputAudioTranscription")
@@ -68,7 +87,6 @@ class Content(BaseModel):
 
 class RealtimeInput(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
-    media_chunks: Optional[List[InlineData]] = Field(default=None, alias="mediaChunks")  # deprecated, use audio / video
     audio: Optional[InlineData] = None
     video: Optional[InlineData] = None
     text: Optional[str] = None
@@ -132,12 +150,20 @@ class ErrorDetails(BaseModel):
     message: Optional[str] = None
     status: Optional[str] = None
 
+class UsageMetadata(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    prompt_token_count: Optional[int] = Field(default=None, alias="promptTokenCount")
+    response_token_count: Optional[int] = Field(default=None, alias="responseTokenCount")
+    thoughts_token_count: Optional[int] = Field(default=None, alias="thoughtsTokenCount")
+    total_token_count: Optional[int] = Field(default=None, alias="totalTokenCount")
+
 class ServerMessage(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
     server_content: Optional[ServerContent] = Field(default=None, alias="serverContent")
     setup_complete: Optional[SetupComplete] = Field(default=None, alias="setupComplete")
     tool_call: Optional[ToolCall] = Field(default=None, alias="toolCall")
     tool_call_cancellation: Optional[ToolCallCancellation] = Field(default=None, alias="toolCallCancellation")
+    usage_metadata: Optional[UsageMetadata] = Field(default=None, alias="usageMetadata")
     error: Optional[ErrorDetails] = None
 
 # Messages from the backend to the browser, in addition to the forwarded Live API messages

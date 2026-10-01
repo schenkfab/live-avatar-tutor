@@ -558,8 +558,8 @@ document.addEventListener('DOMContentLoaded', () => {
             micAudioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
             const source = micAudioContext.createMediaStreamSource(micStream);
             
-            // Using ScriptProcessorNode to capture raw PCM audio to send directly to Gemini Live
-            micProcessor = micAudioContext.createScriptProcessor(2048, 1, 1);
+            // Using ScriptProcessorNode to capture raw PCM audio (1024 samples @ 16kHz = 64ms chunks, within 20-100ms optimal window)
+            micProcessor = micAudioContext.createScriptProcessor(1024, 1, 1);
             
             let sentChunks = 0;
             micProcessor.onaudioprocess = (e) => {
