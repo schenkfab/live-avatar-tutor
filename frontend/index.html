@@ -20,6 +20,11 @@
                 </div>
             </div>
             <div class="header-actions">
+                <button id="artifacts-toggle-btn" class="action-btn artifacts-btn" title="Toggle Artifacts Pane" style="display: none;">
+                    <span class="material-icons">auto_awesome</span>
+                    <span>Artifacts</span>
+                    <span id="artifacts-badge-count" class="badge-count">0</span>
+                </button>
                 <button id="connect-btn" class="action-btn connect">Connect</button>
                 <button id="disconnect-btn" class="action-btn disconnect" style="display: none;">Disconnect</button>
                 <div id="status-badge" class="badge disconnected">Disconnected</div>
@@ -67,7 +72,83 @@
                     <button id="send-btn" class="icon-btn primary" disabled><span class="material-icons">send</span></button>
                 </div>
             </div>
+            <aside class="artifacts-pane" id="artifacts-pane" style="display: none;">
+                <div class="artifacts-header">
+                    <div class="artifacts-title-group">
+                        <span class="material-icons artifacts-icon">auto_awesome</span>
+                        <h2>Artifacts</h2>
+                        <span id="artifacts-pane-count" class="artifacts-chip">0</span>
+                    </div>
+                    <div class="artifacts-header-actions">
+                        <button id="artifacts-expand-btn" class="icon-btn-ghost artifacts-expand-btn" title="Expand artifacts pane" style="display: none;">
+                            <span class="material-icons">keyboard_double_arrow_left</span>
+                        </button>
+                        <button id="artifacts-close-btn" class="icon-btn-ghost artifacts-minimize-btn" title="Minimize artifacts pane">
+                            <span class="material-icons">keyboard_double_arrow_right</span>
+                        </button>
+                    </div>
+                </div>
+
+                <div class="artifacts-empty" id="artifacts-empty">
+                    <div class="artifacts-empty-icon">
+                        <span class="material-icons">perm_media</span>
+                    </div>
+                    <h3>No artifacts yet</h3>
+                    <p>Images and videos created during your session will appear here.</p>
+                </div>
+
+                <div class="artifacts-content" id="artifacts-content" style="display: none;">
+                    <div class="featured-artifact-container" id="featured-artifact-container">
+                        <div class="featured-media-wrapper" id="featured-media-wrapper">
+                            <!-- Image, Video or Pending Indicator injected dynamically -->
+                        </div>
+                        <div class="featured-meta" id="featured-meta">
+                            <div class="featured-meta-header">
+                                <span class="artifact-type-pill" id="featured-type-pill">Image</span>
+                                <span class="artifact-model-pill" id="featured-model-pill">Nano Banana</span>
+                                <span class="artifact-time" id="featured-time">Just now</span>
+                            </div>
+                            <p class="featured-prompt" id="featured-prompt"></p>
+                            <div class="featured-actions">
+                                <a id="featured-download-btn" class="featured-btn download" download href="#" title="Download artifact">
+                                    <span class="material-icons">download</span>
+                                    <span>Download</span>
+                                </a>
+                                <button id="featured-fullscreen-btn" class="featured-btn" title="View Full Size">
+                                    <span class="material-icons">fullscreen</span>
+                                    <span>Expand</span>
+                                </button>
+                                <button id="featured-copy-btn" class="featured-btn" title="Copy prompt">
+                                    <span class="material-icons">content_copy</span>
+                                    <span id="featured-copy-text">Copy</span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="artifacts-gallery-section" id="artifacts-gallery-section">
+                        <div class="artifacts-gallery-header">
+                            <span>Recent Artifacts</span>
+                        </div>
+                        <div class="artifacts-gallery-strip" id="artifacts-gallery-strip">
+                            <!-- Thumbnails injected dynamically -->
+                        </div>
+                    </div>
+                </div>
+            </aside>
         </main>
+    </div>
+
+    <!-- Fullscreen Lightbox Modal -->
+    <div id="media-lightbox" class="media-lightbox" style="display: none;">
+        <div class="lightbox-backdrop" id="lightbox-backdrop"></div>
+        <div class="lightbox-container">
+            <button id="lightbox-close-btn" class="lightbox-close" title="Close">
+                <span class="material-icons">close</span>
+            </button>
+            <div id="lightbox-content" class="lightbox-content"></div>
+            <div id="lightbox-caption" class="lightbox-caption"></div>
+        </div>
     </div>
     <script src="app.js"></script>
 </body>

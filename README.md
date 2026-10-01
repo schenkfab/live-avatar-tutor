@@ -70,7 +70,7 @@ Open http://localhost:8080. Click Connect, then click once anywhere on the page 
 * Teacher and Voice: choose the avatar and the voice. Changing them during a session reconnects.
 * Text box: everything also works typed.
 
-Generated images and videos appear as cards in the chat with a download link. Videos start muted; unmute with the player controls.
+Generated images and videos appear as cards in the chat and also in a dedicated Artifacts pane with high-resolution previews, a session gallery strip, prompt copying, fullscreen expand, and direct download links. Videos start muted; unmute with the player controls.
 
 ## Configuration
 

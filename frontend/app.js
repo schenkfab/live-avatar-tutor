@@ -26,6 +26,34 @@ document.addEventListener('DOMContentLoaded', () => {
     const userInput = document.getElementById('user-input');
     const sendBtn = document.getElementById('send-btn');
 
+    // Artifacts UI elements
+    const appContainer = document.querySelector('.app-container');
+    const artifactsToggleBtn = document.getElementById('artifacts-toggle-btn');
+    const artifactsBadgeCount = document.getElementById('artifacts-badge-count');
+    const artifactsPane = document.getElementById('artifacts-pane');
+    const artifactsPaneCount = document.getElementById('artifacts-pane-count');
+    const artifactsCloseBtn = document.getElementById('artifacts-close-btn');
+    const artifactsExpandBtn = document.getElementById('artifacts-expand-btn');
+    const artifactsEmpty = document.getElementById('artifacts-empty');
+    const artifactsContent = document.getElementById('artifacts-content');
+    const featuredMediaWrapper = document.getElementById('featured-media-wrapper');
+    const featuredTypePill = document.getElementById('featured-type-pill');
+    const featuredModelPill = document.getElementById('featured-model-pill');
+    const featuredTime = document.getElementById('featured-time');
+    const featuredPrompt = document.getElementById('featured-prompt');
+    const featuredDownloadBtn = document.getElementById('featured-download-btn');
+    const featuredFullscreenBtn = document.getElementById('featured-fullscreen-btn');
+    const featuredCopyBtn = document.getElementById('featured-copy-btn');
+    const featuredCopyText = document.getElementById('featured-copy-text');
+    const artifactsGalleryStrip = document.getElementById('artifacts-gallery-strip');
+
+    // Lightbox modal elements
+    const mediaLightbox = document.getElementById('media-lightbox');
+    const lightboxBackdrop = document.getElementById('lightbox-backdrop');
+    const lightboxCloseBtn = document.getElementById('lightbox-close-btn');
+    const lightboxContent = document.getElementById('lightbox-content');
+    const lightboxCaption = document.getElementById('lightbox-caption');
+
     // Size the avatar box to the stream so the frame is never cropped
     function fitAvatarContainer() {
         if (!avatarVideo.videoWidth || !avatarVideo.videoHeight) return;
@@ -433,7 +461,360 @@ document.addEventListener('DOMContentLoaded', () => {
         return `${noun.charAt(0).toUpperCase() + noun.slice(1)} generated with ${model}`;
     }
 
+    // Artifacts Pane State & Management: 'expanded' | 'minimized'
+    const artifactsMap = new Map(); // id -> artifact
+    let activeArtifactId = null;
+    let artifactsPaneMode = 'expanded'; // 'expanded' | 'minimized'
+
+    function formatArtifactTime(date) {
+        if (!date) return '';
+        const d = date instanceof Date ? date : new Date(date);
+        return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
+
+    function registerArtifact(id, kind, prompt) {
+        let artifact = artifactsMap.get(id);
+        if (!artifact) {
+            artifact = {
+                id,
+                kind,
+                prompt: prompt || '',
+                state: 'pending',
+                timestamp: new Date(),
+                model: kind === 'video' ? 'Gemini Omni' : 'Nano Banana',
+                url: null,
+                mimeType: null,
+                data: null,
+                error: null
+            };
+            artifactsMap.set(id, artifact);
+        } else {
+            artifact.kind = kind;
+            if (prompt) artifact.prompt = prompt;
+        }
+        activeArtifactId = id;
+        if (artifactsPaneMode === 'expanded') {
+            expandArtifactsPane();
+        } else {
+            minimizeArtifactsPane();
+        }
+        return artifact;
+    }
+
+    function completeArtifact(media) {
+        const kind = media.kind === 'video' ? 'video' : 'image';
+        const mimeType = media.mimeType || media.mime_type || (kind === 'video' ? 'video/mp4' : 'image/png');
+        const blob = new Blob([base64ToArrayBuffer(media.data)], { type: mimeType });
+        const url = URL.createObjectURL(blob);
+
+        let artifact = artifactsMap.get(media.id);
+        if (!artifact) {
+            artifact = {
+                id: media.id,
+                kind,
+                prompt: media.prompt || '',
+                timestamp: new Date(),
+                model: kind === 'video' ? 'Gemini Omni' : 'Nano Banana'
+            };
+            artifactsMap.set(media.id, artifact);
+        }
+        artifact.state = 'done';
+        artifact.url = url;
+        artifact.mimeType = mimeType;
+        artifact.data = media.data;
+        if (media.prompt) artifact.prompt = media.prompt;
+
+        if (!activeArtifactId || activeArtifactId === media.id) {
+            activeArtifactId = media.id;
+        }
+
+        if (artifactsPaneMode === 'expanded') {
+            expandArtifactsPane();
+        } else {
+            minimizeArtifactsPane();
+        }
+        return { artifact, url, mimeType };
+    }
+
+    function failArtifact(error) {
+        const kind = error.kind === 'video' ? 'video' : 'image';
+        let artifact = artifactsMap.get(error.id);
+        if (!artifact) {
+            artifact = {
+                id: error.id,
+                kind,
+                prompt: '',
+                timestamp: new Date(),
+                model: kind === 'video' ? 'Gemini Omni' : 'Nano Banana'
+            };
+            artifactsMap.set(error.id, artifact);
+        }
+        artifact.state = 'failed';
+        artifact.error = error.message || 'Generation failed.';
+        renderArtifactsPane();
+        return artifact;
+    }
+
+    function expandArtifactsPane() {
+        if (!artifactsPane) return;
+        artifactsPaneMode = 'expanded';
+        artifactsPane.style.display = 'flex';
+        artifactsPane.classList.remove('minimized');
+        if (appContainer) {
+            appContainer.classList.add('has-artifacts-pane');
+            appContainer.classList.remove('artifacts-minimized');
+        }
+        if (artifactsToggleBtn) {
+            artifactsToggleBtn.classList.add('active');
+            artifactsToggleBtn.title = 'Minimize Artifacts Pane';
+        }
+        if (artifactsExpandBtn) artifactsExpandBtn.style.display = 'none';
+        if (artifactsCloseBtn) artifactsCloseBtn.style.display = 'flex';
+        renderArtifactsPane();
+    }
+
+    function minimizeArtifactsPane() {
+        if (!artifactsPane) return;
+        if (artifactsMap.size === 0) {
+            hideArtifactsPane();
+            return;
+        }
+        artifactsPaneMode = 'minimized';
+        artifactsPane.style.display = 'flex';
+        artifactsPane.classList.add('minimized');
+        if (appContainer) {
+            appContainer.classList.add('has-artifacts-pane', 'artifacts-minimized');
+        }
+        if (artifactsToggleBtn) {
+            artifactsToggleBtn.classList.remove('active');
+            artifactsToggleBtn.title = 'Expand Artifacts Pane';
+        }
+        if (artifactsExpandBtn) artifactsExpandBtn.style.display = 'flex';
+        if (artifactsCloseBtn) artifactsCloseBtn.style.display = 'none';
+        renderArtifactsPane();
+    }
+
+    function hideArtifactsPane() {
+        if (!artifactsPane) return;
+        artifactsPaneMode = 'minimized';
+        artifactsPane.style.display = 'none';
+        if (appContainer) appContainer.classList.remove('has-artifacts-pane', 'artifacts-minimized');
+        if (artifactsToggleBtn) artifactsToggleBtn.classList.remove('active');
+    }
+
+    function toggleArtifactsPane() {
+        if (artifactsPaneMode === 'expanded') {
+            minimizeArtifactsPane();
+        } else {
+            expandArtifactsPane();
+        }
+    }
+
+    function selectArtifact(id) {
+        if (!artifactsMap.has(id)) return;
+        activeArtifactId = id;
+        expandArtifactsPane();
+        renderArtifactsPane();
+    }
+
+    function renderArtifactsPane() {
+        const count = artifactsMap.size;
+        if (artifactsBadgeCount) artifactsBadgeCount.textContent = count;
+        if (artifactsPaneCount) {
+            artifactsPaneCount.textContent = artifactsPaneMode === 'minimized' ? `${count}` : `${count} ${count === 1 ? 'item' : 'items'}`;
+        }
+        
+        if (count > 0 && artifactsToggleBtn) {
+            artifactsToggleBtn.style.display = 'inline-flex';
+        }
+
+        if (count === 0) {
+            hideArtifactsPane();
+            return;
+        }
+
+        if (artifactsEmpty) artifactsEmpty.style.display = 'none';
+        if (artifactsContent) artifactsContent.style.display = 'flex';
+
+        // Featured stage (only populated when expanded)
+        const active = artifactsMap.get(activeArtifactId) || Array.from(artifactsMap.values())[artifactsMap.size - 1];
+        if (!active) return;
+        activeArtifactId = active.id;
+
+        if (artifactsPaneMode === 'expanded' && featuredMediaWrapper) {
+            featuredMediaWrapper.innerHTML = '';
+            if (active.state === 'pending') {
+                const pendingBox = document.createElement('div');
+                pendingBox.className = 'featured-pending';
+                pendingBox.innerHTML = `
+                    <div class="spinner"></div>
+                    <div class="featured-pending-text">Generating ${active.kind} with ${active.model}...</div>
+                    <div class="featured-pending-prompt">${active.prompt ? `"${active.prompt}"` : ''}</div>
+                `;
+                featuredMediaWrapper.appendChild(pendingBox);
+
+                if (featuredTypePill) {
+                    featuredTypePill.innerHTML = `<span class="material-icons" style="font-size: 14px;">hourglass_top</span> Pending`;
+                }
+                if (featuredModelPill) featuredModelPill.textContent = active.model;
+                if (featuredTime) featuredTime.textContent = formatArtifactTime(active.timestamp);
+                if (featuredPrompt) {
+                    featuredPrompt.textContent = active.prompt;
+                    featuredPrompt.style.display = active.prompt ? 'block' : 'none';
+                }
+
+                if (featuredDownloadBtn) featuredDownloadBtn.style.display = 'none';
+                if (featuredFullscreenBtn) featuredFullscreenBtn.style.display = 'none';
+                if (featuredCopyBtn) featuredCopyBtn.style.display = active.prompt ? 'inline-flex' : 'none';
+            } else if (active.state === 'failed') {
+                const failedBox = document.createElement('div');
+                failedBox.className = 'featured-failed';
+                failedBox.innerHTML = `
+                    <span class="material-icons">error_outline</span>
+                    <div style="font-weight: 600;">Generation Failed</div>
+                    <div class="featured-failed-msg">${active.error || 'An error occurred during generation.'}</div>
+                `;
+                featuredMediaWrapper.appendChild(failedBox);
+
+                if (featuredTypePill) {
+                    featuredTypePill.innerHTML = `<span class="material-icons" style="font-size: 14px;">warning</span> Failed`;
+                }
+                if (featuredModelPill) featuredModelPill.textContent = active.model;
+                if (featuredTime) featuredTime.textContent = formatArtifactTime(active.timestamp);
+                if (featuredPrompt) {
+                    featuredPrompt.textContent = active.prompt;
+                    featuredPrompt.style.display = active.prompt ? 'block' : 'none';
+                }
+
+                if (featuredDownloadBtn) featuredDownloadBtn.style.display = 'none';
+                if (featuredFullscreenBtn) featuredFullscreenBtn.style.display = 'none';
+                if (featuredCopyBtn) featuredCopyBtn.style.display = active.prompt ? 'inline-flex' : 'none';
+            } else {
+                // Done
+                let mediaEl;
+                if (active.kind === 'video') {
+                    mediaEl = document.createElement('video');
+                    mediaEl.src = active.url;
+                    mediaEl.controls = true;
+                    mediaEl.autoplay = true;
+                    mediaEl.loop = true;
+                    mediaEl.muted = true;
+                    mediaEl.playsInline = true;
+                } else {
+                    mediaEl = document.createElement('img');
+                    mediaEl.src = active.url;
+                    mediaEl.alt = active.prompt || 'Generated image';
+                    mediaEl.title = 'Click to view full size';
+                    mediaEl.addEventListener('click', () => openLightbox(active));
+                }
+                featuredMediaWrapper.appendChild(mediaEl);
+
+                if (featuredTypePill) {
+                    featuredTypePill.innerHTML = `<span class="material-icons" style="font-size: 14px;">${active.kind === 'video' ? 'movie' : 'image'}</span> ${active.kind === 'video' ? 'Video' : 'Image'}`;
+                }
+                if (featuredModelPill) featuredModelPill.textContent = active.model;
+                if (featuredTime) featuredTime.textContent = formatArtifactTime(active.timestamp);
+                if (featuredPrompt) {
+                    featuredPrompt.textContent = active.prompt;
+                    featuredPrompt.style.display = active.prompt ? 'block' : 'none';
+                }
+
+                if (featuredDownloadBtn) {
+                    featuredDownloadBtn.style.display = 'inline-flex';
+                    featuredDownloadBtn.href = active.url;
+                    const ext = (active.mimeType && active.mimeType.split('/')[1]) || (active.kind === 'video' ? 'mp4' : 'png');
+                    featuredDownloadBtn.download = `${active.kind}-${active.id}.${ext}`;
+                }
+
+                if (featuredFullscreenBtn) {
+                    featuredFullscreenBtn.style.display = 'inline-flex';
+                    featuredFullscreenBtn.onclick = () => openLightbox(active);
+                }
+
+                if (featuredCopyBtn) featuredCopyBtn.style.display = active.prompt ? 'inline-flex' : 'none';
+            }
+        }
+
+        // Render gallery strip
+        if (artifactsGalleryStrip) {
+            artifactsGalleryStrip.innerHTML = '';
+            const list = Array.from(artifactsMap.values()).reverse(); // newest first
+            for (const item of list) {
+                const thumb = document.createElement('div');
+                thumb.className = `artifact-thumb ${item.id === activeArtifactId ? 'active' : ''} ${item.state === 'pending' ? 'pending-thumb' : ''} ${item.state === 'failed' ? 'failed-thumb' : ''}`;
+                thumb.title = item.prompt || `${item.kind} artifact`;
+
+                if (item.state === 'pending') {
+                    const sp = document.createElement('div');
+                    sp.className = 'spinner small';
+                    thumb.appendChild(sp);
+                } else if (item.state === 'failed') {
+                    const icon = document.createElement('span');
+                    icon.className = 'material-icons';
+                    icon.textContent = 'broken_image';
+                    thumb.appendChild(icon);
+                } else if (item.kind === 'video') {
+                    const videoThumb = document.createElement('video');
+                    videoThumb.src = item.url;
+                    videoThumb.muted = true;
+                    videoThumb.preload = 'metadata';
+                    thumb.appendChild(videoThumb);
+                } else {
+                    const imgThumb = document.createElement('img');
+                    imgThumb.src = item.url;
+                    imgThumb.alt = item.prompt || 'Thumbnail';
+                    thumb.appendChild(imgThumb);
+                }
+
+                const badge = document.createElement('div');
+                badge.className = 'artifact-thumb-badge';
+                const badgeIcon = document.createElement('span');
+                badgeIcon.className = 'material-icons';
+                badgeIcon.textContent = item.kind === 'video' ? 'movie' : 'image';
+                badge.appendChild(badgeIcon);
+                thumb.appendChild(badge);
+
+                thumb.addEventListener('click', () => selectArtifact(item.id));
+                artifactsGalleryStrip.appendChild(thumb);
+            }
+        }
+    }
+
+    function openLightbox(artifact) {
+        if (!artifact || artifact.state !== 'done' || !mediaLightbox) return;
+        if (lightboxContent) lightboxContent.innerHTML = '';
+        let mediaEl;
+        if (artifact.kind === 'video') {
+            mediaEl = document.createElement('video');
+            mediaEl.src = artifact.url;
+            mediaEl.controls = true;
+            mediaEl.autoplay = true;
+            mediaEl.loop = true;
+            mediaEl.playsInline = true;
+        } else {
+            mediaEl = document.createElement('img');
+            mediaEl.src = artifact.url;
+            mediaEl.alt = artifact.prompt || 'Full size artifact';
+        }
+        if (lightboxContent) lightboxContent.appendChild(mediaEl);
+        if (lightboxCaption) {
+            lightboxCaption.textContent = artifact.prompt ? `"${artifact.prompt}"` : `${artifact.kind} (${artifact.model})`;
+        }
+        mediaLightbox.style.display = 'flex';
+    }
+
+    function closeLightbox() {
+        if (!mediaLightbox) return;
+        const vid = lightboxContent ? lightboxContent.querySelector('video') : null;
+        if (vid) vid.pause();
+        mediaLightbox.style.display = 'none';
+        if (lightboxContent) lightboxContent.innerHTML = '';
+    }
+
     function createMediaCard(id, kind, prompt) {
+        // Register artifact in the separate pane store
+        registerArtifact(id, kind, prompt);
+
         const card = document.createElement('div');
         card.className = `message media-card pending ${kind}`;
         card.dataset.id = id;
@@ -459,6 +840,13 @@ document.addEventListener('DOMContentLoaded', () => {
         body.appendChild(spinner);
 
         card.append(header, promptEl, body);
+
+        // Clicking the media card focuses it in the artifacts pane
+        card.addEventListener('click', (e) => {
+            if (e.target.closest('a') || e.target.closest('button')) return;
+            selectArtifact(id);
+        });
+
         chatLog.appendChild(card);
         chatLog.scrollTop = chatLog.scrollHeight;
 
@@ -471,11 +859,9 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function showGeneratedMedia(media) {
-        const kind = media.kind === 'video' ? 'video' : 'image';
+        const { artifact, url, mimeType } = completeArtifact(media);
+        const kind = artifact.kind;
         const card = mediaCards.get(media.id) || createMediaCard(media.id, kind, media.prompt || '');
-        const mimeType = media.mimeType || media.mime_type || (kind === 'video' ? 'video/mp4' : 'image/png');
-        const blob = new Blob([base64ToArrayBuffer(media.data)], { type: mimeType });
-        const url = URL.createObjectURL(blob);
 
         const body = card.querySelector('.media-body');
         body.innerHTML = '';
@@ -492,11 +878,26 @@ document.addEventListener('DOMContentLoaded', () => {
             element = document.createElement('img');
             element.src = url;
             element.alt = media.prompt || 'Generated image';
+            element.addEventListener('click', (e) => {
+                e.stopPropagation();
+                selectArtifact(media.id);
+            });
         }
         body.appendChild(element);
 
         const footer = document.createElement('div');
         footer.className = 'media-footer';
+
+        const viewInPaneBtn = document.createElement('button');
+        viewInPaneBtn.type = 'button';
+        viewInPaneBtn.className = 'view-in-pane-btn';
+        viewInPaneBtn.innerHTML = '<span class="material-icons">visibility</span> View in Pane';
+        viewInPaneBtn.onclick = (e) => {
+            e.stopPropagation();
+            selectArtifact(media.id);
+        };
+        footer.appendChild(viewInPaneBtn);
+
         const link = document.createElement('a');
         link.href = url;
         link.download = `${kind}-${media.id}.${mimeType.split('/')[1] || 'bin'}`;
@@ -513,6 +914,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function showGenerationError(error) {
+        failArtifact(error);
         const kind = error.kind === 'video' ? 'video' : 'image';
         const card = mediaCards.get(error.id) || createMediaCard(error.id, kind, '');
         const body = card.querySelector('.media-body');
@@ -874,4 +1276,29 @@ document.addEventListener('DOMContentLoaded', () => {
     populateTeacherPicker();
     cameraBtn.addEventListener('click', () => toggleVideoInput('camera'));
     screenBtn.addEventListener('click', () => toggleVideoInput('screen'));
+
+    // Artifacts Pane & Lightbox Event Listeners
+    if (artifactsToggleBtn) artifactsToggleBtn.addEventListener('click', toggleArtifactsPane);
+    if (artifactsCloseBtn) artifactsCloseBtn.addEventListener('click', minimizeArtifactsPane);
+    if (artifactsExpandBtn) artifactsExpandBtn.addEventListener('click', expandArtifactsPane);
+    if (lightboxCloseBtn) lightboxCloseBtn.addEventListener('click', closeLightbox);
+    if (lightboxBackdrop) lightboxBackdrop.addEventListener('click', closeLightbox);
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && mediaLightbox && mediaLightbox.style.display !== 'none') {
+            closeLightbox();
+        }
+    });
+    if (featuredCopyBtn) {
+        featuredCopyBtn.addEventListener('click', () => {
+            const active = artifactsMap.get(activeArtifactId);
+            if (active && active.prompt) {
+                navigator.clipboard.writeText(active.prompt).then(() => {
+                    if (featuredCopyText) featuredCopyText.textContent = 'Copied!';
+                    setTimeout(() => {
+                        if (featuredCopyText) featuredCopyText.textContent = 'Copy';
+                    }, 1500);
+                }).catch(() => {});
+            }
+        });
+    }
 });
